@@ -1,0 +1,210 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Step functions start-pipeline-button with a notifier sample
+Resources:
+
+      ApiGatewayStepFunctionsRole:
+        Type: "AWS::IAM::Role"
+        Properties:
+            Path: "/"
+            AssumeRolePolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                -
+                  Sid: "AllowApiGatewayServiceToAssumeRole"
+                  Effect: "Allow"
+                  Action: 
+                    - "sts:AssumeRole"
+                  Principal:
+                    Service:
+                      - "apigateway.amazonaws.com"
+            Policies:
+              -
+                PolicyName: "CallStepFunctions"
+                PolicyDocument:
+                  Version: '2012-10-17'
+                  Statement:
+                    -
+                      Effect: "Allow"
+                      Action:
+                        - "states:StartExecution"
+                      Resource: 
+                        - !Ref StepFunctionStateMachine
+
+
+      StepFunctionsAPI:
+        Type: AWS::Serverless::Api
+        Properties:
+            StageName: dev
+            DefinitionBody:
+                swagger: 2.0
+                info:
+                  title:
+                    Ref: AWS::StackName
+                paths:
+                  "/startpipeline":
+                    post:
+                      responses:
+                        "200":
+                          description: "200 response"
+                      x-amazon-apigateway-integration:
+                        credentials: !GetAtt ApiGatewayStepFunctionsRole.Arn
+                        responses:
+                          default:
+                            statusCode: "200"
+                        uri: !Sub "arn:aws:apigateway:${AWS::Region}:states:action/StartExecution"
+                        passthroughBehavior: "when_no_match"
+                        httpMethod: "POST"
+                        type: "aws"
+                swagger: '2.0'
+
+
+      StepFunctionsServiceRole:
+          Type: "AWS::IAM::Role"
+          Properties:
+              Path: "/"
+              ManagedPolicyArns:
+                - "arn:aws:iam::aws:policy/AWSStepFunctionsFullAccess"
+              AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                  -
+                    Sid: "AllowStepFunctionsServiceToAssumeRole"
+                    Effect: "Allow"
+                    Action: 
+                      - "sts:AssumeRole"
+                    Principal:
+                      Service:
+                        - !Sub "states.${AWS::Region}.amazonaws.com"
+              Policies:
+                -
+                  PolicyName: "CallLambdaFunctions"
+                  PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                      -
+                        Effect: "Allow"
+                        Action:
+                          - "lambda:InvokeFunction"
+                        Resource: 
+                          - !Sub ${SlackNotifierFunction.Arn}
+                          - !Sub ${StartPipelineServiceFunction.Arn}
+
+
+      # No need for extra permissions other than Basic Execution
+      # SAM takes care of creating basic IAM Role if none is provided
+      SlackNotifierFunction:
+        Type: 'AWS::Serverless::Function'
+        Properties:
+          Handler: slack.lambda_handler
+          Runtime: python2.7
+          CodeUri: ../code/slack/
+
+
+      StartPipelineServiceRole:
+          Type: "AWS::IAM::Role"
+          Properties:
+              ManagedPolicyArns:
+                  - "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+              Path: "/"
+              AssumeRolePolicyDocument:
+                Version: "2012-10-17"
+                Statement:
+                  -
+                    Sid: "AllowLambdaServiceToAssumeRole"
+                    Effect: "Allow"
+                    Action: 
+                      - "sts:AssumeRole"
+                    Principal:
+                      Service: 
+                        - "lambda.amazonaws.com"
+              Policies:
+                -
+                  PolicyName: "StartPipeline"
+                  PolicyDocument:
+                    Version: '2012-10-17'
+                    Statement:
+                      -
+                        Sid: "AllowLambdaServiceToStartPipeline"
+                        Effect: "Allow"
+                        Action:
+                          - codepipeline:StartPipelineExecution
+                        Resource: "*"
+
+
+      StartPipelineServiceFunction:
+        Type: 'AWS::Serverless::Function'
+        Properties:
+          Handler: start_pipeline.lambda_handler
+          Runtime: python2.7
+          CodeUri: ../code/start_pipeline/
+          Role: !GetAtt StartPipelineServiceRole.Arn
+
+
+      StepFunctionStateMachine:
+        Type: "AWS::StepFunctions::StateMachine"
+        Properties:
+          DefinitionString: !Sub |
+            {
+                "Comment": "Demo that triggers a CodePipeline pipeline and notify a Slack channel if instructed to",
+                "StartAt": "StartPipeline",
+                "States": {
+                  "StartPipeline": {
+                    "Type": "Task",
+                    "Resource": "${StartPipelineServiceFunction.Arn}",
+                    "Next": "NotifierState"
+                  },
+                  "NotifierState": {
+                    "Type" : "Choice",
+                    "Choices": [
+                      {
+                        "Variable": "$.notifier",
+                        "StringEquals": "Slack",
+                        "Next": "SlackNotifier"
+                      },
+                      {
+                        "Variable": "$.notifier",
+                        "StringEquals": "Twilio",
+                        "Next": "NotImplementedYet"
+                      }
+                    ],
+                    "Default": "IgnoreNotification"
+                  },
+                  "IgnoreNotification": {
+                    "Type": "Succeed"
+                  },
+                  "NotImplementedYet": {
+                    "Type": "Fail",
+                    "Cause": "Feature not implemented yet!"
+                  },
+                  "SlackNotifier": {
+                    "Type": "Task",
+                    "Resource": "${SlackNotifierFunction.Arn}",
+                    "End": true
+                  }
+                }
+            }
+          RoleArn: !GetAtt StepFunctionsServiceRole.Arn
+
+
+Outputs:
+
+        StartPipelineUrl:
+          Description: Start Pipeline URL 
+          Value: !Sub "https://${StepFunctionsAPI}.execute-api.${AWS::Region}.amazonaws.com/dev/startpipeline"
+
+        StepFunctionsStateMachine:
+          Description: Step Functions State Machine ARN
+          Value: !Ref StepFunctionStateMachine
+
+        StepFunctionsServiceRole:
+          Description: Step Functions IAM Service Role
+          Value: !GetAtt StepFunctionsServiceRole.Arn
+
+        SlackFunction:
+          Description: Slack Notifier function ARN
+          Value: !GetAtt SlackNotifierFunction.Arn
+
+        ApiGatewayServiceRole:
+          Description: API Gateway IAM Service Role
+          Value: !GetAtt ApiGatewayStepFunctionsRole.Arn

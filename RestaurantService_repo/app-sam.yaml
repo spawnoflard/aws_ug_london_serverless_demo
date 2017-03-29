@@ -1,0 +1,82 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Parameters:
+  Stage:
+    Type: String
+    AllowedValues:
+      - beta
+      - gamma
+      - prod
+    Default: beta
+    Description: Stage that can be added to resource names
+
+Resources:
+  RestaurantsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: lambda.handler
+      CodeUri: restaurants-service/
+      Runtime: nodejs4.3
+      Timeout: 5
+      Policies:
+        Statement:
+          - Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query 
+              - dynamodb:Scan
+              - dynamodb:PutItem
+            Resource:
+              - !Sub 
+                - 'arn:aws:dynamodb:*:*:table/${Table}'
+                - { Table: !Ref RestaurantsTable }
+              - !Sub 
+                - 'arn:aws:dynamodb:*:*:table/${Table}'
+                - { Table: !Ref MenuTable }
+          - Effect: Allow
+            Action:
+              - logs:*
+            Resource:
+              - "*"    
+      Environment:
+        Variables:
+          RESTAURANTS_TABLE: !Ref RestaurantsTable
+          MENUS_TABLE: !Ref MenuTable
+      Events:
+        GreedyResource:
+            Type: Api
+            Properties:
+              Path: /{proxy+}
+              Method: ANY
+
+  RestaurantsTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      PrimaryKey:
+        Name: id
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+        
+  MenuTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: "restaurant_id"
+          AttributeType: "S"
+        - AttributeName: "id"
+          AttributeType: "S"
+      KeySchema:
+        - AttributeName: "restaurant_id"
+          KeyType: "HASH"
+        - AttributeName: "id"
+          KeyType: "RANGE"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+Outputs:
+  ApiUrl:
+    Description: URL for application
+    Value: !Sub 'https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod'
